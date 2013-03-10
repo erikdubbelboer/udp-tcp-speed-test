@@ -13,10 +13,12 @@ int main() {
   me.sin_family = AF_INET;
   me.sin_port   = htons(9991);
 
-  if (inet_aton("127.0.0.1", &me.sin_addr) == 0) {
+  me.sin_addr.s_addr = htons(INADDR_ANY);
+
+  /*if (inet_aton("127.0.0.1", &me.sin_addr) == 0) {
     perror("inet_aton");
     exit(1);
-  }
+  }*/
 
   int fd = socket(PF_INET, SOCK_DGRAM, 0);
 

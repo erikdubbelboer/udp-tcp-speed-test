@@ -10,18 +10,20 @@
 #undef USE_SELECT
 
 
-int main() {
+int main(int argc, const char* argv[]) {
+  const char* ip = (argc > 1) ? argv[1] : "127.0.0.1";
+
+
+  printf("pinging %s\n", ip);
+
+
   struct sockaddr_in me;
 
   memset(&me, 0, sizeof(me));
   
-  me.sin_family = AF_INET;
-  me.sin_port   = htons(0);  // First free port.
-
-  if (inet_aton("127.0.0.1", &me.sin_addr) == 0) {
-    perror("inet_aton");
-    exit(1);
-  }
+  me.sin_family      = AF_INET;
+  me.sin_port        = htons(0);  // First free port.
+  me.sin_addr.s_addr = htons(INADDR_ANY);
 
 
   int fd = socket(PF_INET, SOCK_DGRAM, 0);
@@ -55,7 +57,7 @@ int main() {
   other.sin_family = AF_INET;
   other.sin_port = htons(9991);
 
-  if (inet_aton("127.0.0.1", &other.sin_addr) == 0) {
+  if (inet_aton(ip, &other.sin_addr) == 0) {
     perror("inet_aton");
     exit(1);
   }

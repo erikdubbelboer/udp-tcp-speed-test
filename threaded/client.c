@@ -19,9 +19,10 @@
 spinlock_t lock;
 #endif
 
-
-uint32_t   sent;
-uint32_t   received;
+  
+static const char* ip = "127.0.0.1";
+static uint32_t    sent;
+static uint32_t    received;
 
 
 void* printer(void* arg) {
@@ -51,8 +52,8 @@ void* worker(void* arg) {
 
   memset(&me, 0, sizeof(me));
   
-  me.sin_family = AF_INET;
-  me.sin_port = htons(0);  // First free port.
+  me.sin_family      = AF_INET;
+  me.sin_port        = htons(0);  // First free port.
   me.sin_addr.s_addr = htonl(INADDR_ANY);
 
 
@@ -85,9 +86,9 @@ void* worker(void* arg) {
   memset(&other, 0, sizeof(other));
 
   other.sin_family = AF_INET;
-  other.sin_port = htons(9991);
+  other.sin_port   = htons(9991);
 
-  if (inet_aton("127.0.0.1", &other.sin_addr) == 0) {
+  if (inet_aton(ip, &other.sin_addr) == 0) {
     perror("inet_aton");
     exit(1);
   }
@@ -167,11 +168,15 @@ int main(int argc, char* argv[]) {
   int count = 3;
 
   if (argc > 1) {
-    count = atoi(argv[1]);
+    ip = argv[1];
+
+    if (argc > 2) {
+      count = atoi(argv[2]);
+    }
   }
 
 
-  printf("using %d threads\n", count);
+  printf("pinging %s using %d threads\n", ip, count);
 
 
 #ifdef USE_SPINLOCK

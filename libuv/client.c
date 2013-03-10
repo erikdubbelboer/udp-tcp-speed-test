@@ -22,6 +22,7 @@ typedef struct socket_s {
 } socket_t;
 
 
+static const char* ip    = "127.0.0.1";
 static int         count = 3;
 static uv_loop_t*  loop;
 static socket_t*   sockets;
@@ -40,7 +41,7 @@ static void send_cb(uv_udp_send_t* req, int status) {
 
 
 static void send_packet(socket_t* socket) {
-  struct sockaddr_in addr = uv_ip4_addr("127.0.0.1", 9991);
+  struct sockaddr_in addr = uv_ip4_addr(ip, 9991);
   uv_udp_send_t*     req  = malloc(sizeof(uv_udp_send_t));
   uv_buf_t           buf;
 
@@ -113,10 +114,14 @@ static void second_cb(uv_timer_t* handle, int status) {
 
 int main(int argc, char* argv[]) {
   if (argc > 1) {
-    count = atoi(argv[1]);
+    ip = argv[1];
+
+    if (argc > 2) {
+      count = atoi(argv[2]);
+    }
   }
 
-  printf("using %d sockets\n", count);
+  printf("pinging %s using %d sockets\n", ip, count);
 
   loop    = uv_default_loop();
   sockets = malloc(sizeof(socket_t) * count);

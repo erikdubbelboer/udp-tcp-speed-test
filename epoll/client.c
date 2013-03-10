@@ -1,9 +1,10 @@
 
 #include <arpa/inet.h>
-#include <sys/time.h>  // gettimeofday()
-#include <string.h>    // memset()
-#include <stdio.h>     // printf(), perror()
-#include <stdlib.h>    // exit()
+#include <sys/time.h>   // gettimeofday()
+#include <sys/epoll.h>  // epoll
+#include <string.h>     // memset()
+#include <stdio.h>      // printf(), perror()
+#include <stdlib.h>     // exit()
 
 
 int create_socket() {
@@ -14,6 +15,7 @@ int create_socket() {
   me.sin_family      = AF_INET;
   me.sin_port        = htons(0);  // First free port.
   me.sin_addr.s_addr = htons(INADDR_ANY);
+
 
   int fd = socket(PF_INET, SOCK_DGRAM, 0);
 
@@ -59,7 +61,6 @@ int main(int argc, char* argv[]) {
     }
   }
 
-
   printf("pinging %s using %d sockets\n", ip, count);
 
 
@@ -79,22 +80,25 @@ int main(int argc, char* argv[]) {
   int            fds[count];
   struct timeval timers[count];
   struct timeval printer;
-  fd_set         rfds;
-  int            maxfd = -1;
-
-  FD_ZERO(&rfds);
 
   memset(timers, 0, sizeof(timers));
 
 
+  int epfd = epoll_create(count);
+
+
   // Create the sockets.
   for (int i = 0; i < count; ++i) {
+    struct epoll_event ee;
+    
     fds[i] = create_socket();
 
-    FD_SET(fds[i], &rfds);
+    ee.events  = EPOLLIN;
+    ee.data.fd = fds[i];
 
-    if (fds[i] > maxfd) {
-      maxfd = fds[i];
+    if (epoll_ctl(epfd, EPOLL_CTL_ADD, ee.data.fd, &ee) == -1) {
+      perror("epoll_ctl");
+      exit(1);
     }
 
     send_packet(fds[i], &other);
@@ -167,14 +171,13 @@ int main(int argc, char* argv[]) {
     mtv.tv_usec -= tv.tv_usec;
 
 
-    fd_set tfds;
+    int                timeout = (mtv.tv_sec * 1000) + (mtv.tv_usec / 1000);
+    struct epoll_event events[count];
 
-    memcpy(&tfds, &rfds, sizeof(fd_set));
-
-    int ready = select(maxfd + 1, &tfds, NULL, NULL, &mtv);
+    int ready = epoll_wait(epfd, events, count, timeout);
 
     if (ready == -1) {
-      perror("select");
+      perror("epoll_wait");
       exit(1);
     }
 
@@ -183,17 +186,17 @@ int main(int argc, char* argv[]) {
     }
 
 
-    for (int i = 0; i < count; ++i) {
-      if (FD_ISSET(fds[i], &tfds)) {
+    for (int i = 0; i < ready; ++i) {
+      if (events[i].events & EPOLLIN) {
         char    buffer[65507];  // Max UDP packet size ((2^16 - 1) - (8 byte UDP header) - (20 byte IP header)).
-        ssize_t n = recv(fds[i], buffer, sizeof(buffer), 0);
+        ssize_t n = recv(events[i].data.fd, buffer, sizeof(buffer), 0);
 
         if (n < 0) {
           perror("recv");
           exit(1);
         }
 
-        send_packet(fds[i], &other);
+        send_packet(events[i].data.fd, &other);
 
         timers[i].tv_sec  = tv.tv_sec;
         timers[i].tv_usec = tv.tv_usec + 100000;
