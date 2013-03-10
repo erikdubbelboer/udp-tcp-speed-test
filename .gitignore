@@ -1,0 +1,9 @@
+server/server
+*/client
+libuv/out/Makefile
+libuv/out/client.target.mk
+libuv/out/*/.deps/
+libuv/out/*/client
+libuv/out/*/linker.lock
+libuv/out/*/obj.target/
+libuv/out/deps/
