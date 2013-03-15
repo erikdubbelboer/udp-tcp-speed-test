@@ -1,10 +1,10 @@
 
 #include <arpa/inet.h>
-#include <sys/time.h>  // gettimeofday()
-#include <string.h>    // memset()
-#include <stdio.h>     // printf(), perror()
-#include <stdlib.h>    // exit()
-#include <poll.h>      // poll()
+#include <sys/time.h>   // gettimeofday()
+#include <sys/epoll.h>  // epoll
+#include <string.h>     // memset()
+#include <stdio.h>      // printf(), perror()
+#include <stdlib.h>     // exit()
 
 
 int create_socket() {
@@ -17,7 +17,7 @@ int create_socket() {
   me.sin_addr.s_addr = htons(INADDR_ANY);
 
 
-  int fd = socket(PF_INET, SOCK_DGRAM, 0);
+  int fd = socket(AF_INET, SOCK_DGRAM, 0);
 
   if (fd < 0) {
     perror("socket");
@@ -77,20 +77,31 @@ int main(int argc, char* argv[]) {
   }
 
 
+  int            fds[count];
   struct timeval timers[count];
   struct timeval printer;
-  struct pollfd  pfds[count];
 
-  memset(pfds  , 0, sizeof(pfds));
   memset(timers, 0, sizeof(timers));
+
+
+  int epfd = epoll_create(count);
 
 
   // Create the sockets.
   for (int i = 0; i < count; ++i) {
-    pfds[i].fd     = create_socket();
-    pfds[i].events = POLLIN;
+    struct epoll_event ee;
+    
+    fds[i] = create_socket();
 
-    send_packet(pfds[i].fd, &other);
+    ee.events  = EPOLLIN;
+    ee.data.fd = fds[i];
+
+    if (epoll_ctl(epfd, EPOLL_CTL_ADD, ee.data.fd, &ee) == -1) {
+      perror("epoll_ctl");
+      exit(1);
+    }
+
+    send_packet(fds[i], &other);
   }
 
 
@@ -122,7 +133,7 @@ int main(int argc, char* argv[]) {
       // If the timer has expired.
       if ((timers[i].tv_sec < tv.tv_sec) ||
           ((timers[i].tv_sec == tv.tv_sec) && (timers[i].tv_usec < tv.tv_usec))) {
-        send_packet(pfds[i].fd, &other);
+        send_packet(fds[i], &other);
 
         timers[i].tv_sec  = tv.tv_sec;
         timers[i].tv_usec = tv.tv_usec + 100000;
@@ -160,12 +171,13 @@ int main(int argc, char* argv[]) {
     mtv.tv_usec -= tv.tv_usec;
 
 
-    int timeout = (mtv.tv_sec * 1000) + (mtv.tv_usec / 1000);
+    int                timeout = (mtv.tv_sec * 1000) + (mtv.tv_usec / 1000);
+    struct epoll_event events[count];
 
-    int ready = poll(pfds, count, timeout);
+    int ready = epoll_wait(epfd, events, count, timeout);
 
     if (ready == -1) {
-      perror("poll");
+      perror("epoll_wait");
       exit(1);
     }
 
@@ -174,17 +186,17 @@ int main(int argc, char* argv[]) {
     }
 
 
-    for (int i = 0; i < count; ++i) {
-      if (pfds[i].revents & POLLIN) {
+    for (int i = 0; i < ready; ++i) {
+      if (events[i].events & EPOLLIN) {
         char    buffer[65507];  // Max UDP packet size ((2^16 - 1) - (8 byte UDP header) - (20 byte IP header)).
-        ssize_t n = recv(pfds[i].fd, buffer, sizeof(buffer), 0);
+        ssize_t n = recv(events[i].data.fd, buffer, sizeof(buffer), 0);
 
         if (n < 0) {
           perror("recv");
           exit(1);
         }
 
-        send_packet(pfds[i].fd, &other);
+        send_packet(events[i].data.fd, &other);
 
         timers[i].tv_sec  = tv.tv_sec;
         timers[i].tv_usec = tv.tv_usec + 100000;

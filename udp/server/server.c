@@ -20,7 +20,7 @@ int main() {
     exit(1);
   }*/
 
-  int fd = socket(PF_INET, SOCK_DGRAM, 0);
+  int fd = socket(AF_INET, SOCK_DGRAM, 0);
 
   if (bind(fd, (struct sockaddr*)&me, sizeof(me)) != 0) {
     perror("bind");

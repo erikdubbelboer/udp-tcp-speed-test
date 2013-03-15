@@ -26,7 +26,7 @@ int main(int argc, const char* argv[]) {
   me.sin_addr.s_addr = htons(INADDR_ANY);
 
 
-  int fd = socket(PF_INET, SOCK_DGRAM, 0);
+  int fd = socket(AF_INET, SOCK_DGRAM, 0);
 
   if (fd < 0) {
     perror("socket");
