@@ -5,12 +5,26 @@
 #include <stdio.h>     // printf(), perror()
 #include <stdlib.h>    // exit()
 
+#include "../../util.h"
+
+
+#define PACKETSIZE 16
+#define TIMEOUT    10000  // Timeout in microseconds.
+#define USE_SELECT
+//#define USE_POLL
+//#define USE_EPOLL
+
+
+#ifdef USE_POLL
+#include <poll.h>
+#elif defined USE_EPOLL
+#include <sys/epoll.h>
+#endif
+
 
 int create_socket() {
   struct sockaddr_in me;
-
   memset(&me, 0, sizeof(me));
-  
   me.sin_family      = AF_INET;
   me.sin_port        = htons(0);  // First free port.
   me.sin_addr.s_addr = htons(INADDR_ANY);
@@ -32,15 +46,13 @@ int create_socket() {
 
 
 void send_packet(int fd, struct sockaddr_in* other) {
-  char buffer[65507];  // Max UDP packet size ((2^16 - 1) - (8 byte UDP header) - (20 byte IP header)).
+  char buffer[PACKETSIZE];
 
-  int s = snprintf(buffer, sizeof(buffer), "test");
+  gettimeofday((struct timeval*)buffer, 0);
 
-  if (s > sizeof(buffer)) {
-    s = sizeof(buffer);
-  }
+  str_repeat(buffer + sizeof(struct timeval), 't', (unsigned int)sizeof(buffer) - (unsigned int)sizeof(struct timeval));
 
-  if (sendto(fd, buffer, s, 0, (struct sockaddr*)other, sizeof(*other)) != s) {
+  if (sendto(fd, buffer, PACKETSIZE, 0, (struct sockaddr*)other, sizeof(*other)) != PACKETSIZE) {
     perror("sendto");
     exit(1);
   }
@@ -59,144 +71,208 @@ int main(int argc, char* argv[]) {
     }
   }
 
-
-  printf("pinging %s using %d sockets\n", ip, count);
-
+  printf(
+    "pinging %s using %d sockets (%s)\n",
+    ip,
+    count,
+#ifdef USE_SELECT
+    "select"
+#elif defined USE_POLL
+    "poll"
+#elif defined USE_EPOLL
+    "epoll"
+#endif
+  );
 
   struct sockaddr_in other;
-
   memset(&other, 0, sizeof(other));
-
   other.sin_family = AF_INET;
-  other.sin_port = htons(9991);
+  other.sin_port   = htons(9991);
 
   if (inet_aton(ip, &other.sin_addr) == 0) {
     perror("inet_aton");
     exit(1);
   }
 
-
-  int            fds[count];
-  struct timeval timers[count];
-  struct timeval printer;
-  fd_set         rfds;
-  int            maxfd = -1;
-
+  int      fds[count];
+  uint64_t timers[count];
+  uint64_t printer;
+#ifdef USE_SELECT
+  fd_set   rfds;
+  int      maxfd = -1;
+  
   FD_ZERO(&rfds);
-
-  memset(timers, 0, sizeof(timers));
-
+#elif defined USE_POLL
+  struct pollfd  pfds[count];
+#elif defined USE_EPOLL
+  int epfd = epoll_create(count);
+#endif
 
   // Create the sockets.
   for (int i = 0; i < count; ++i) {
-    fds[i] = create_socket();
+    fds[i]    = create_socket();
+    timers[i] = ustime() + TIMEOUT;
 
+#ifdef USE_SELECT
     FD_SET(fds[i], &rfds);
 
     if (fds[i] > maxfd) {
       maxfd = fds[i];
     }
+#elif defined USE_POLL
+    pfds[i].fd     = fds[i];
+    pfds[i].events = POLLIN;
+#elif defined USE_EPOLL
+    struct epoll_event ee;
+
+    ee.events  = EPOLLIN;
+    ee.data.fd = fds[i];
+
+    if (epoll_ctl(epfd, EPOLL_CTL_ADD, ee.data.fd, &ee) == -1) {
+      perror("epoll_ctl");
+      exit(1);
+    }
+#endif
 
     send_packet(fds[i], &other);
   }
 
 
-  if (gettimeofday(&printer, 0) == -1) {
-    perror("gettimeofday");
-    exit(1);
-  }
-
-  printer.tv_sec += 1;
+  printer = ustime() + 1000000;
 
 
-  uint32_t sent     = 0;
-  uint32_t received = 0;
+  uint32_t sent         = 0;
+  uint32_t received     = 0;
+  uint64_t microseconds = 0;
 
 
   for (;;) {
-    struct timeval tv;   // The current time.
-    struct timeval mtv;  // The lowest timeout.
-
-    if (gettimeofday(&tv, 0) == -1) {
-      perror("gettimeofday");
-      exit(1);
-    }
-
-    mtv = tv;
+    uint64_t now = ustime();
+    uint64_t min = now + 1000000;
 
     // Check for timeouts.
     for (int i = 0; i < count; ++i) {
       // If the timer has expired.
-      if ((timers[i].tv_sec < tv.tv_sec) ||
-          ((timers[i].tv_sec == tv.tv_sec) && (timers[i].tv_usec < tv.tv_usec))) {
+      if (timers[i] < now) {
         send_packet(fds[i], &other);
 
-        timers[i].tv_sec  = tv.tv_sec;
-        timers[i].tv_usec = tv.tv_usec + 100000;
+        timers[i] = now + TIMEOUT;
 
         ++sent;
       }
 
       // Is this the lowest timer?
-      if ((timers[i].tv_sec < mtv.tv_sec) ||
-          ((timers[i].tv_sec == mtv.tv_sec) && (timers[i].tv_usec < mtv.tv_usec))) {
-        mtv = timers[i];
+      if (timers[i] < min) {
+        min = timers[i];
       }
     }
 
 
-    if ((printer.tv_sec < tv.tv_sec) ||
-        ((printer.tv_sec == tv.tv_sec) && (printer.tv_usec < tv.tv_usec))) {
-      printf("%6u per second (%6u missing)\n", received, (sent - received));
+    if (printer < now) {
+      char rbuffer[32];
+      char mbuffer[32];
+      char sbuffer[32];
 
-      sent     = 0;
-      received = 0;
+      printf(
+        "%6u per second %10s (%6u missing %10s) (%6u sent %10s) (%6lu microseconds latency)\n",
+        received,
+        printsize(rbuffer, sizeof(rbuffer), received * PACKETSIZE),
+        sent - received,
+        printsize(mbuffer, sizeof(mbuffer), (sent - received) * PACKETSIZE),
+        sent,
+        printsize(sbuffer, sizeof(sbuffer), sent * PACKETSIZE),
+        (received > 0) ? (microseconds / received) : 0
+      );
 
-      printer.tv_sec += 1;
+      sent         = 0;
+      received     = 0;
+      microseconds = 0;
+
+      printer += 1000000;
     }
 
     // Is the printer timer the lowest timer?
-    if ((printer.tv_sec < mtv.tv_sec) ||
-        ((printer.tv_sec == mtv.tv_sec) && (printer.tv_usec < mtv.tv_usec))) {
-      mtv = printer;
+    if (printer < min) {
+      min = printer;
     }
 
 
     // Make it an interval, not an exact time.
-    mtv.tv_sec  -= tv.tv_sec;
-    mtv.tv_usec -= tv.tv_usec;
+    min -= now;
 
 
-    fd_set tfds;
+#ifdef USE_SELECT
+    struct timeval tv;
+    fd_set         tfds;
 
     memcpy(&tfds, &rfds, sizeof(fd_set));
+    
+    tv.tv_sec  = min / 1000000;
+    tv.tv_usec = min % 1000000;
 
-    int ready = select(maxfd + 1, &tfds, NULL, NULL, &mtv);
+    int ready = select(maxfd + 1, &tfds, NULL, NULL, &tv);
+#elif defined USE_POLL
+    int ready   = poll(pfds, count, min / 1000);
+#elif defined USE_EPOLL
+    struct epoll_event events[count];
+
+    int ready = epoll_wait(epfd, events, count, min / 1000);
+#endif
 
     if (ready == -1) {
+#ifdef USE_SELECT
       perror("select");
+#elif defined USE_POLL
+      perror("poll");
+#elif defined USE_EPOLL
+      perror("epoll_wait");
+#endif
+
       exit(1);
     }
 
     if (ready == 0) {
+      // Timeout.
       continue;
     }
 
+    struct timeval  tvnow;
+    gettimeofday(&tvnow, 0);
 
     for (int i = 0; i < count; ++i) {
+#ifdef USE_SELECT
       if (FD_ISSET(fds[i], &tfds)) {
-        char    buffer[65507];  // Max UDP packet size ((2^16 - 1) - (8 byte UDP header) - (20 byte IP header)).
+#elif defined USE_POLL
+      if (pfds[i].revents & POLLIN) {
+#elif defined USE_EPOLL
+      int hasdata = 0;
+
+      for (int j = 0; j < ready; ++j) {
+        if ((events[j].events & EPOLLIN) &&
+            (events[i].data.fd = fds[i])) {
+          hasdata = 1;
+          break;
+        }
+      }
+
+      if (hasdata) {
+#endif
+        char    buffer[PACKETSIZE];
         ssize_t n = recv(fds[i], buffer, sizeof(buffer), 0);
 
-        if (n < 0) {
+        if (n != PACKETSIZE) {
           perror("recv");
           exit(1);
         }
 
         send_packet(fds[i], &other);
 
-        timers[i].tv_sec  = tv.tv_sec;
-        timers[i].tv_usec = tv.tv_usec + 100000;
+        timers[i] = now + TIMEOUT;
+
+        struct timeval* tvsent = (struct timeval*)buffer;
+
+        microseconds += (tvnow.tv_sec  - tvsent->tv_sec) * 1000000;
+        microseconds +=  tvnow.tv_usec - tvsent->tv_usec;
 
         ++sent;
         ++received;

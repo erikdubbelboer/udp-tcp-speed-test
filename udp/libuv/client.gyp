@@ -14,6 +14,7 @@
 
       'sources': [
         'client.c',
+        '../../util.c'
       ],
 
       'defines': [

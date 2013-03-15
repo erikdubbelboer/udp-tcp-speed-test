@@ -9,8 +9,8 @@
 #include <errno.h>        // errno, EWOULDBLOCK
 
 
-#define PACKETSIZE 4
-#define NODELAY
+#define PACKETSIZE 16
+#define NODELAY 1
 
 
 int main() {
@@ -39,13 +39,11 @@ int main() {
     exit(1);
   }
 
-#ifdef NODELAY
-  on = 1;
+  on = NODELAY;
   if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on)) != 0) {
     perror("setsockopt");
     exit(1);
   }
-#endif
 
   int flags = fcntl(fd, F_GETFL, 0);
 
@@ -77,13 +75,13 @@ int main() {
   FD_ZERO(&fds);
   FD_SET(fd, &fds);
 
-  tv.tv_sec  = 1;
-  tv.tv_usec = 0;
-
   while (1) {
     fd_set rfds;
 
     memcpy(&rfds, &fds, sizeof(fds));
+  
+    tv.tv_sec  = 1;
+    tv.tv_usec = 0;
 
     int ready = select(maxfd + 1, &rfds, 0, 0, &tv);
 
@@ -112,6 +110,20 @@ int main() {
 
               break;
             }
+
+#if 0  // O_NONBLOCK should not be set, disable it on systems which inherit this flag (not linux).
+            int flags = fcntl(nfd, F_GETFL, 0);
+
+            if (flags == -1) {
+              perror("fcntl");
+              exit(1);
+            }
+
+            if (fcntl(nfd, F_SETFL, flags & ~O_NONBLOCK) != 0) {
+              perror("fcntl");
+              exit(1);
+            }
+#endif
 
             FD_SET(nfd, &fds);
 

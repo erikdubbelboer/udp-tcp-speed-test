@@ -17,6 +17,8 @@ char* str_repeat(char* buffer, char c, unsigned int count);
 uint32_t rand32();
 uint64_t rand64();
 
+int64_t ustime();  // Current time in microseconds.
+
 
 inline uint8_t _rotr8(uint8_t b, uint8_t n) {
   uint8_t r;

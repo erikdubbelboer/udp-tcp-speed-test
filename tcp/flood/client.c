@@ -1,16 +1,20 @@
 
 #include <arpa/inet.h>
 #include <netinet/tcp.h>  // TCP_NODELAY
+#include <fcntl.h>        // fcntl()
+#include <sys/time.h>     // gettimeofday()
 #include <string.h>       // memset()
 #include <stdio.h>        // perror()
 #include <stdlib.h>       // exit()
 #include <time.h>         // time_t, time()
+#include <errno.h>        // errno, EWOULDBLOCK
 
-#include "../util.h"
+#include "../../util.h"
 
 
-#define PACKETSIZE 4
-#define NODELAY
+#define PACKETSIZE 16
+#define NODELAY 1
+#define NONBLOCK
 
 
 int create_socket(const char* ip) {
@@ -27,10 +31,22 @@ int create_socket(const char* ip) {
     exit(1);
   }
 
-#ifdef NODELAY
-  int on = 1;
+  int on = NODELAY;
   if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on)) != 0) {
     perror("setsockopt");
+    exit(1);
+  }
+
+#ifdef NONBLOCK
+  int flags = fcntl(fd, F_GETFL, 0);
+
+  if (flags == -1) {
+    perror("fcntl");
+    exit(1);
+  }
+
+  if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) {
+    perror("fcntl");
     exit(1);
   }
 #endif
@@ -45,9 +61,15 @@ int create_socket(const char* ip) {
     exit(1);
   }
 
-  if (connect(fd, (struct sockaddr*)&other, sizeof(other)) != 0) {
-    perror("connect");
-    exit(1);
+  int n = connect(fd, (struct sockaddr*)&other, sizeof(other));
+
+  if (n != 0) {
+    if (errno != EINPROGRESS) { // Non-blocking tcp sockets return EINPROGRESS on connect().
+      perror("connect");
+      exit(1);
+    }
+
+    errno = 0;  // Reset errno so calls to perror() are correct when errno isn't set.
   }
 
   return fd;
@@ -55,6 +77,11 @@ int create_socket(const char* ip) {
 
 
 int main(int argc, const char* argv[]) {
+  if (PACKETSIZE < sizeof(struct timeval)) {
+    printf("PACKETSIZE should be at least %ld\n", sizeof(struct timeval));
+    exit(1);
+  }
+
   int         count = 3;
   const char* ip    = "127.0.0.1";
 
@@ -68,10 +95,11 @@ int main(int argc, const char* argv[]) {
 
   printf("pinging %s using %d sockets\n", ip, count);
 
-  uint32_t       sent     = 0;
-  uint32_t       received = 0;
-  time_t         next     = time(NULL) + 1;
-  int            maxfd    = 0;
+  uint32_t       sent         = 0;
+  uint32_t       received     = 0;
+  uint64_t       microseconds = 0;
+  time_t         next         = time(NULL) + 1;
+  int            maxfd        = 0;
   fd_set         fds;
   struct timeval tv;
 
@@ -87,27 +115,32 @@ int main(int argc, const char* argv[]) {
     }
   }
 
-  tv.tv_sec  = 0;
-  tv.tv_usec = 1000;
-
   while (1) {
     time_t now = time(NULL);
 
     if (now > next) {
-      char sbuffer[32];
       char rbuffer[32];
+      char sbuffer[32];
+
+      if (sent < received) {
+        sent = received;
+      }
+
       printf(
-        "%6u per second %s (%6u missing %s)\n",
+        "%6u per second %10s (%6u missing %10s) (%6lu microsecond latency, %6lu miliseconds)\n",
         received,
-        printsize(rbuffer, sizeof(rbuffer), received),
+        printsize(rbuffer, sizeof(rbuffer), received * PACKETSIZE),
         sent - received,
-        printsize(sbuffer, sizeof(sbuffer), sent - received)
+        printsize(sbuffer, sizeof(sbuffer), (sent - received) / PACKETSIZE),
+        (received > 0) ? (microseconds / received) : 0,
+        (received > 0) ? ((microseconds / received) / 1000) : 0
       );
 
       ++next;
       
-      sent     -= received;
-      received = 0;
+      sent         = 0;
+      received     = 0;
+      microseconds = 0;
     }
 
 
@@ -115,6 +148,9 @@ int main(int argc, const char* argv[]) {
 
     memcpy(&rfds, &fds, sizeof(fds));
     memcpy(&wfds, &fds, sizeof(fds));
+   
+    tv.tv_sec  = 0;
+    tv.tv_usec = 1000;
 
     int ready = select(maxfd + 1, &rfds, &wfds, 0, &tv);
 
@@ -135,23 +171,39 @@ int main(int argc, const char* argv[]) {
         int  n = recv(i, buffer, sizeof(buffer), MSG_WAITALL);
 
         if (n != PACKETSIZE) {
-          perror("recv");
-          exit(1);
-        }
+          if (errno != EWOULDBLOCK) {
+            perror("recv");
+            exit(1);
+          }
+        } else {
+          struct timeval  tvnow;
+          struct timeval* tvsent = (struct timeval*)buffer;
 
-        ++received;
+          gettimeofday(&tvnow, 0);
+
+          microseconds += (tvnow.tv_sec  - tvsent->tv_sec) * 1000000;
+          microseconds +=  tvnow.tv_usec - tvsent->tv_usec;
+
+          ++received;
+        }
       }
       if (FD_ISSET(i, &wfds)) {
         char buffer[PACKETSIZE];
 
-        str_repeat(buffer, 't', sizeof(buffer));
+        gettimeofday((struct timeval*)buffer, 0);
 
-        if (send(i, buffer, PACKETSIZE, 0) != PACKETSIZE) {
-          perror("send");
-          exit(1);
+        str_repeat(buffer + sizeof(struct timeval), 't', (unsigned int)sizeof(buffer) - (unsigned int)sizeof(struct timeval));
+
+        int n = send(i, buffer, PACKETSIZE, 0);
+       
+        if (n != PACKETSIZE) {
+          if (errno != EWOULDBLOCK) {
+            perror("send");
+            exit(1);
+          }
+        } else {
+          ++sent;
         }
-
-        ++sent;
       }
     }
   }

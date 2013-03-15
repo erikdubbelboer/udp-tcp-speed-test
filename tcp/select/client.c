@@ -1,20 +1,18 @@
 
 #include <arpa/inet.h>
-#include <netinet/tcp.h>  // TCP_NODELAY
+#include <netinet/tcp.h>  // TCP_NODELAY]
+#include <sys/time.h>     // gettimeofday()
 #include <string.h>       // memset()
 #include <stdio.h>        // printf(), perror()
 #include <stdlib.h>       // exit()
 #include <time.h>         // time_t, time()
 
-#include "../util.h"
+#include "../../util.h"
 
 
-#define PACKETSIZE 4
-#define NODELAY
+#define PACKETSIZE 16
+#define NODELAY 1
   
-
-uint32_t sent = 0;
-
 
 int create_socket(const char* ip) {
   struct sockaddr_in me;
@@ -30,13 +28,11 @@ int create_socket(const char* ip) {
     exit(1);
   }
 
-#ifdef NODELAY
-  int on = 1;
+  int on = NODELAY;
   if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on)) != 0) {
     perror("setsockopt");
     exit(1);
   }
-#endif
 
   struct sockaddr_in other;
   memset(&other, 0, sizeof(other));
@@ -60,14 +56,14 @@ int create_socket(const char* ip) {
 void send_packet(int fd) {
   char buffer[PACKETSIZE];
 
-  str_repeat(buffer, 't', sizeof(buffer));
+  gettimeofday((struct timeval*)buffer, 0);
+
+  str_repeat(buffer + sizeof(struct timeval), 't', (unsigned int)sizeof(buffer) - (unsigned int)sizeof(struct timeval));
 
   if (send(fd, buffer, PACKETSIZE, 0) != PACKETSIZE) {
     perror("send");
     exit(1);
   }
-
-  ++sent;
 }
 
 
@@ -85,9 +81,10 @@ int main(int argc, const char* argv[]) {
 
   printf("pinging %s using %d sockets\n", ip, count);
 
-  uint32_t       received = 0;
-  time_t         next     = time(NULL) + 1;
-  int            maxfd    = 0;
+  uint32_t       received     = 0;
+  uint64_t       microseconds = 0;
+  time_t         next         = time(NULL) + 1;
+  int            maxfd        = 0;
   fd_set         fds;
   struct timeval tv;
 
@@ -105,25 +102,30 @@ int main(int argc, const char* argv[]) {
     }
   }
 
-  tv.tv_sec  = 0;
-  tv.tv_usec = 1000;
-
   while (1) {
+    char   rbuffer[32];
     time_t now = time(NULL);
 
     if (now > next) {
-      printf("%6u per second (%6u missing)\n", received, (sent - received));
+      printf(
+        "%6u per second %10s (%6lu microseconds latency)\n",
+        received,
+        printsize(rbuffer, sizeof(rbuffer), received * PACKETSIZE),
+        (received > 0) ? (microseconds / received) : 0
+      );
 
       ++next;
       
-      sent     -= received;
-      received = 0;
+      received     = 0;
+      microseconds = 0;
     }
 
 
     fd_set rfds;
-
     memcpy(&rfds, &fds, sizeof(fds));
+  
+    tv.tv_sec  = 0;
+    tv.tv_usec = 1000;
 
     int ready = select(maxfd + 1, &rfds, 0, 0, &tv);
 
@@ -149,6 +151,14 @@ int main(int argc, const char* argv[]) {
         }
 
         ++received;
+
+        struct timeval  tvnow;
+        struct timeval* tvsent = (struct timeval*)buffer;
+
+        gettimeofday(&tvnow, 0);
+
+        microseconds += (tvnow.tv_sec  - tvsent->tv_sec) * 1000000;
+        microseconds +=  tvnow.tv_usec - tvsent->tv_usec;
 
         send_packet(i);
       }

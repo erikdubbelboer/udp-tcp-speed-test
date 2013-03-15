@@ -1,10 +1,16 @@
 
 // For more info see: http://nikhilm.github.com/uvbook/networking.html#udp
 
-#include <stdio.h>   // printf()
-#include <stdlib.h>  // exit()
+#include <sys/time.h>  // gettimeofday()
+#include <stdio.h>     // printf()
+#include <stdlib.h>    // exit()
 
 #include "uv.h"
+
+#include "../../util.h"
+
+
+#define PACKETSIZE 16
 
 
 #define CHECK(x) \
@@ -17,17 +23,19 @@
 
 
 typedef struct socket_s {
+  char       buffer[PACKETSIZE];
   uv_udp_t   udp;
   uv_timer_t timer;
 } socket_t;
 
 
-static const char* ip    = "127.0.0.1";
-static int         count = 3;
+static const char* ip           = "127.0.0.1";
+static int         count        = 3;
+static uint32_t    sent         = 0;
+static uint32_t    received     = 0;
+uint64_t           microseconds = 0;
 static uv_loop_t*  loop;
 static socket_t*   sockets;
-static uint32_t    sent;
-static uint32_t    received;
 
 
 static void timeout_cb(uv_timer_t* handle, int status);
@@ -45,13 +53,12 @@ static void send_packet(socket_t* socket) {
   uv_udp_send_t*     req  = malloc(sizeof(uv_udp_send_t));
   uv_buf_t           buf;
 
-  char buffer[65507];  // Max UDP packet size ((2^16 - 1) - (8 byte UDP header) - (20 byte IP header))
-  buf.base = buffer;
-  buf.len  = snprintf(buf.base, sizeof(buffer), "test");
+  buf.base = socket->buffer;
+  buf.len  = sizeof(socket->buffer);
 
-  if (buf.len > sizeof(buffer)) {
-    buf.len = sizeof(buffer);
-  }
+  gettimeofday((struct timeval*)socket->buffer, 0);
+
+  str_repeat(socket->buffer + sizeof(struct timeval), 't', (unsigned int)sizeof(socket->buffer) - (unsigned int)sizeof(struct timeval));
 
   req->data = socket;
   
@@ -81,7 +88,6 @@ static uv_buf_t recv_alloc(uv_handle_t* handle, size_t suggested_size) {
 
 
 void recv_read(uv_udp_t *req, ssize_t nread, uv_buf_t buf, struct sockaddr *addr, unsigned flags) {
-  (void)buf;
   (void)addr;
   (void)flags;
 
@@ -90,7 +96,15 @@ void recv_read(uv_udp_t *req, ssize_t nread, uv_buf_t buf, struct sockaddr *addr
     exit(1);
   }
 
-  if (nread > 0) {
+  if (nread == PACKETSIZE) {
+    struct timeval  tvnow;
+    struct timeval* tvsent = (struct timeval*)buf.base;
+
+    gettimeofday(&tvnow, 0);
+
+    microseconds += (tvnow.tv_sec  - tvsent->tv_sec) * 1000000;
+    microseconds +=  tvnow.tv_usec - tvsent->tv_usec;
+
     ++received;
 
     send_packet((socket_t*)req->data);
@@ -105,10 +119,24 @@ static void second_cb(uv_timer_t* handle, int status) {
   
   CHECK(status);
 
-  printf("%6u per second (%6u missing)\n", received, (sent - received));
+  char rbuffer[32];
+  char mbuffer[32];
+  char sbuffer[32];
 
-  sent     = 0;
-  received = 0;
+  printf(
+    "%6u per second %10s (%6u missing %10s) (%6u sent %10s) (%6lu microseconds latency)\n",
+    received,
+    printsize(rbuffer, sizeof(rbuffer), received * PACKETSIZE),
+    sent - received,
+    printsize(mbuffer, sizeof(mbuffer), (sent - received) * PACKETSIZE),
+    sent,
+    printsize(sbuffer, sizeof(sbuffer), sent * PACKETSIZE),
+    (received > 0) ? (microseconds / received) : 0
+  );
+
+  sent         = 0;
+  received     = 0;
+  microseconds = 0;
 }
 
 
@@ -139,9 +167,6 @@ int main(int argc, char* argv[]) {
     
     send_packet(&sockets[i]);
   }
-
-  sent     = 0;
-  received = 0;
 
   uv_timer_t second;
 

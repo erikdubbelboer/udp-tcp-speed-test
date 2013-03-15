@@ -1,22 +1,26 @@
 
 #include <arpa/inet.h>
-#include <string.h>   // memset()
-#include <stdio.h>    // printf(), perror()
-#include <stdlib.h>   // exit()
-#include <errno.h>    // EAGAIN
-#include <time.h>     // time_t, time()
-#include <unistd.h>   // sleep()
+#include <sys/time.h>  // gettimeofday()
+#include <string.h>    // memset()
+#include <stdio.h>     // printf(), perror()
+#include <stdlib.h>    // exit()
+#include <errno.h>     // EAGAIN
+#include <time.h>      // time_t, time()
+#include <unistd.h>    // sleep()
 #include <pthread.h>
 
-
 #include "spinlock.h"
+#include "../../util.h"
 
-spinlock_t lock;
 
-  
-static const char* ip = "127.0.0.1";
-static uint32_t    sent;
-static uint32_t    received;
+#define PACKETSIZE 16
+
+
+static spinlock_t  lock;
+static const char* ip           = "127.0.0.1";
+static uint32_t    sent         = 0;
+static uint32_t    received     = 0;
+static uint64_t    microseconds = 0;
 static int         fd;
 
 
@@ -28,25 +32,41 @@ void* printer(void* arg) {
 
     uint32_t s = sent;
     uint32_t r = received;
-    
-    //sent     -= received;
-    sent     = 0;
-    received = 0;
-    
+    uint64_t m = microseconds;
+   
+    sent         = 0; 
+    received     = 0;
+    microseconds = 0;
+
     spinlock_unlock(&lock);
 
-    printf("%6u per second (%6u missing) %6u sent\n", r, (s - r), s);
+    if (s < r) {
+      s = r;
+    }
+
+    char rbuffer[32];
+    char mbuffer[32];
+    char sbuffer[32];
+
+    printf(
+      "%6u per second %10s (%6u missing %10s) (%6u sent %10s) (%6lu microseconds latency)\n",
+      r,
+      printsize(rbuffer, sizeof(rbuffer), r * PACKETSIZE),
+      s - r,
+      printsize(mbuffer, sizeof(mbuffer), (s - r) * PACKETSIZE),
+      s,
+      printsize(sbuffer, sizeof(sbuffer), s * PACKETSIZE),
+      (r > 0) ? (m / r) : 0
+    );
   }
 
-  return NULL;
+  return 0;
 }
 
 
 void* sender(void* arg) {
   struct sockaddr_in other;
-
   memset(&other, 0, sizeof(other));
-
   other.sin_family = AF_INET;
   other.sin_port   = htons(9991);
 
@@ -56,16 +76,13 @@ void* sender(void* arg) {
   }
 
   for (;;) {
-    char buffer[65507];  // Max UDP packet size ((2^16 - 1) - (8 byte UDP header) - (20 byte IP header)).
+    char buffer[PACKETSIZE];
 
-    int s = snprintf(buffer, sizeof(buffer), "test");
+    gettimeofday((struct timeval*)buffer, 0);
 
-    if (s > sizeof(buffer)) {
-      s = sizeof(buffer);
-    }
+    str_repeat(buffer + sizeof(struct timeval), 't', (unsigned int)sizeof(buffer) - (unsigned int)sizeof(struct timeval));
 
-
-    if (sendto(fd, buffer, s, 0, (struct sockaddr*)&other, sizeof(other)) != s) {
+    if (sendto(fd, buffer, PACKETSIZE, 0, (struct sockaddr*)&other, sizeof(other)) != PACKETSIZE) {
       perror("sendto");
       exit(1);
     }
@@ -75,72 +92,62 @@ void* sender(void* arg) {
     spinlock_unlock(&lock);
   }
 
-  return NULL;
+  return 0;
 }
 
 
 int main(int argc, char* argv[]) {
-  int count = 3;
-
   if (argc > 1) {
     ip = argv[1];
-
-    if (argc > 2) {
-      count = atoi(argv[2]);
-    }
   }
 
-
-  printf("pinging %s using %d threads\n", ip, count);
-
+  printf("pinging %s\n", ip);
 
   spinlock_init(&lock);
-
 
   pthread_t printert;
 
   pthread_create(&printert, 0, printer, NULL);
 
-
-  
   struct sockaddr_in me;
-
   memset(&me, 0, sizeof(me));
-  
   me.sin_family      = AF_INET;
   me.sin_port        = htons(0);  // First free port.
   me.sin_addr.s_addr = htonl(INADDR_ANY);
-
 
   fd = socket(AF_INET, SOCK_DGRAM, 0);
 
   if (fd < 0) {
     perror("socket");
     exit(1);
-  }
-  
+  }  
   
   if (bind(fd, (struct sockaddr*)&me, sizeof(me)) != 0) {
     perror("bind");
     exit(1);
   }
 
-
   pthread_t sender_thread;
 
   pthread_create(&sender_thread, 0, sender, NULL);
 
-
   for (;;) {
-    char buffer[65507];
+    char buffer[PACKETSIZE];
     
-    if (recv(fd, buffer, sizeof(buffer), 0) == -1) {
+    if (recv(fd, buffer, sizeof(buffer), 0) != PACKETSIZE) {
       perror("recv");
       exit(1);
     }
 
+    struct timeval  tvnow;
+    struct timeval* tvsent = (struct timeval*)buffer;
+
+    gettimeofday(&tvnow, 0);
+
     spinlock_lock(&lock);
     ++received;
+    microseconds += (tvnow.tv_sec  - tvsent->tv_sec) * 1000000;
+    microseconds +=  tvnow.tv_usec - tvsent->tv_usec;
     spinlock_unlock(&lock);
   }
 

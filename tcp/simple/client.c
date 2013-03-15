@@ -1,15 +1,16 @@
 
 #include <arpa/inet.h>
 #include <netinet/tcp.h>  // TCP_NODELAY
+#include <sys/time.h>     // gettimeofday()
 #include <string.h>       // memset()
 #include <stdio.h>        // printf(), perror()
 #include <stdlib.h>       // exit()
 #include <time.h>         // time_t, time()
 
-#include "../util.h"
+#include "../../util.h"
 
 
-#define PACKETSIZE 4
+#define PACKETSIZE 16
 #define NODELAY
 
 
@@ -55,17 +56,17 @@ int main(int argc, const char* argv[]) {
   }
 
 
-  uint32_t       received = 0;
-  time_t         next = time(NULL) + 1;
+  uint32_t       received     = 0;
+  uint64_t       microseconds = 0;
+  time_t         next         = time(NULL) + 1;
   struct timeval tv;
-
-  tv.tv_sec  = 0;
-  tv.tv_usec = 1000;
 
   while (1) {
     char buffer[PACKETSIZE];
 
-    str_repeat(buffer, 't', sizeof(buffer));
+    gettimeofday((struct timeval*)buffer, 0);
+
+    str_repeat(buffer + sizeof(struct timeval), 't', (unsigned int)sizeof(buffer) - (unsigned int)sizeof(struct timeval));
 
     if (send(fd, buffer, PACKETSIZE, 0) != PACKETSIZE) {
       perror("send");
@@ -73,19 +74,29 @@ int main(int argc, const char* argv[]) {
     }
 
     while (1) {
+      char   rbuffer[32];
       time_t now = time(NULL);
 
       if (now > next) {
-        printf("%6u per second\n", received);
+        printf(
+          "%6u per second %10s (%6lu microseconds latency)\n",
+          received,
+          printsize(rbuffer, sizeof(rbuffer), received * PACKETSIZE),
+          (received > 0) ? (microseconds / received) : 0
+        );
 
         ++next;
 
-        received = 0;
+        received     = 0;
+        microseconds = 0;
       }
 
       fd_set rfds;
       FD_ZERO(&rfds);
       FD_SET(fd, &rfds);
+
+      tv.tv_sec  = 0;
+      tv.tv_usec = 1000;
 
       int ready = select(fd + 1, &rfds, NULL, NULL, &tv);
 
@@ -113,6 +124,14 @@ int main(int argc, const char* argv[]) {
       perror("recv");
       exit(1);
     }
+
+    struct timeval  tvnow;
+    struct timeval* tvsent = (struct timeval*)buffer;
+
+    gettimeofday(&tvnow, 0);
+
+    microseconds += (tvnow.tv_sec  - tvsent->tv_sec) * 1000000;
+    microseconds +=  tvnow.tv_usec - tvsent->tv_usec;
 
     ++received;
   }

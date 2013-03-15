@@ -1,5 +1,5 @@
-udp/server/server
-tcp/select/server
+tcp/inherittest/inherittest
+*/*/server
 */*/client
 */libuv/out/Makefile
 */libuv/out/client.target.mk

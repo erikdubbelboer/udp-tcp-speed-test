@@ -1,7 +1,8 @@
 
-#include <stdio.h>   // snprintf()
-#include <stdlib.h>  // rand()
-#include <math.h>    // log(), pow()
+#include <sys/time.h>  // gettimeofday()
+#include <stdio.h>     // snprintf()
+#include <stdlib.h>    // rand()
+#include <math.h>      // log(), pow()
 
 #include "util.h"
 
@@ -27,7 +28,7 @@ char* printsize(char* buffer, unsigned int length, uint64_t size) {
 char* str_repeat(char* buffer, char c, unsigned int count) {
   char* p = buffer;
 
-  for (int i = 0; i < count; ++i) {
+  for (unsigned int i = 0; i < count; ++i) {
     *p++ = c;
   }
 
@@ -53,5 +54,18 @@ uint64_t rand64() {
   }
 
   return r;
+}
+
+
+int64_t ustime() {
+  struct timeval tv;
+  int64_t        ust;
+
+  gettimeofday(&tv, NULL);
+
+  ust = ((int64_t)tv.tv_sec) * 1000000;
+  ust += tv.tv_usec;
+
+  return ust;
 }
 

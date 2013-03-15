@@ -16,9 +16,9 @@
       }
     },
     
-    'cflags'   : [ '-Wall', '-Wextra', '-pedantic', '-pthread', '-fPIC', '-std=c99' ],
+    'cflags'   : [ '-Wall', '-Wextra', '-pedantic', '-pthread', '-fPIC', '-std=gnu99' ],
     'cflags_cc': [ '-fno-rtti', '-std=c++0x' ],
-    'ldflags'  : [ '-pthread', '-rdynamic' ],
+    'ldflags'  : [ '-pthread', '-rdynamic', '-lm' ],
 
     'conditions': [
       [ 'target_arch=="x64"', {
