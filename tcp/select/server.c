@@ -133,43 +133,51 @@ int main() {
           }
         } else {
           char buffer[PACKETSIZE];
-          int  n = recv(i, buffer, sizeof(buffer), 0);
 
-          if (n == -1) {
-            if (errno == ECONNRESET) {
-              // Close the socket.
-              n = 0;
-            } else {
-              perror("recv");
-              exit(1);
-            }
-          }
+          // Read everything there is to read on this socket.
+          while (1) {
+            int n = recv(i, buffer, PACKETSIZE, MSG_DONTWAIT);
 
-          if (n > 0) {
-            // Respond.
-            int s = send(i, buffer, n, 0);
-
-            if (s != n) {
-              if (errno == ECONNRESET) {
+            if (n != PACKETSIZE) {
+              if (errno == EWOULDBLOCK) {
+                break;
+              } else if (errno == ECONNRESET) {
                 // Close the socket.
                 n = 0;
               } else {
-                perror("send");
+                perror("recv");
                 exit(1);
               }
             }
-          }
 
-          // Does this socket need to be closed?
-          if (n == 0) {
-            close(i);
+            if (n > 0) {
+              // Respond.
+              int s = send(i, buffer, n, 0);
 
-            FD_CLR(i, &fds);
-
-            if (i == maxfd) {
-              while (!FD_ISSET(maxfd, &fds)) {
-                --maxfd;
+              if (s != n) {
+                if (errno == ECONNRESET) {
+                  // Close the socket.
+                  n = 0;
+                } else {
+                  perror("send");
+                  exit(1);
+                }
               }
+            }
+
+            // Does this socket need to be closed?
+            if (n == 0) {
+              close(i);
+
+              FD_CLR(i, &fds);
+
+              if (i == maxfd) {
+                while (!FD_ISSET(maxfd, &fds)) {
+                  --maxfd;
+                }
+              }
+
+              break;
             }
           }
         }

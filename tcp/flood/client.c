@@ -138,7 +138,7 @@ int main(int argc, const char* argv[]) {
 
       ++next;
       
-      sent         = 0;
+      sent        -= received;  // Don't reset sent, we want to know how many packets are buffered.
       received     = 0;
       microseconds = 0;
     }
@@ -168,7 +168,7 @@ int main(int argc, const char* argv[]) {
     for (int i = 3; i <= maxfd; ++i) {
       if (FD_ISSET(i, &rfds)) {
         char buffer[PACKETSIZE];
-        int  n = recv(i, buffer, sizeof(buffer), MSG_WAITALL);
+        int  n = recv(i, buffer, sizeof(buffer), 0);
 
         if (n != PACKETSIZE) {
           if (errno != EWOULDBLOCK) {
